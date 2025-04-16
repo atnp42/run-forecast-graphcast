@@ -69,8 +69,11 @@ def upload_result_to_dropbox(local_file):
             commit = dropbox.files.CommitInfo(path=dropbox_target_path, mode=dropbox.files.WriteMode("overwrite"))
 
             chunk_idx = 1
-            while f.tell() < file_size:
+            while True:
                 chunk = f.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+
                 if f.tell() < file_size:
                     dbx.files_upload_session_append_v2(chunk, cursor)
                     print(f"[UPLOAD] Chunk {chunk_idx}/{total_chunks} appended.")
@@ -78,6 +81,8 @@ def upload_result_to_dropbox(local_file):
                 else:
                     dbx.files_upload_session_finish(chunk, cursor, commit)
                     print(f"[UPLOAD] Chunk {chunk_idx}/{total_chunks} uploaded and committed.")
+                    break
+
                 chunk_idx += 1
 
     os.remove(local_file)
