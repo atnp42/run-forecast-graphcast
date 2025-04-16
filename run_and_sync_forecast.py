@@ -7,10 +7,10 @@ from datetime import datetime, timedelta
 ACCESS_TOKEN = os.getenv("DROPBOX_TOKEN")
 dbx = dropbox.Dropbox(ACCESS_TOKEN)
 
-DROPBOX_ASSETS_PATH = "/graphcast/run_graphcast/assets"
+DROPBOX_ASSETS_PATH = "/run_graphcast/assets"
 LOCAL_ASSETS_PATH = "/workspace/assets"
 
-DROPBOX_RESULTS_PATH = "/graphcast/graphcast_results"
+DROPBOX_RESULTS_PATH = "/graphcast_results"
 LOCAL_RESULTS_PATH = "/workspace/results"
 
 os.makedirs(LOCAL_RESULTS_PATH, exist_ok=True)
@@ -44,7 +44,7 @@ def upload_result_to_dropbox(local_file):
 
 
 def run_forecasts():
-    start_date = datetime(2022, 1, 1)
+    start_date = datetime(2023, 1, 1)
     end_date = datetime(2023, 1, 2)
     lead_time = 168
     time_str = "1200"
