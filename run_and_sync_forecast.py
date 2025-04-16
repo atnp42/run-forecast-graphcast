@@ -115,8 +115,8 @@ def upload_worker():
 # === Forecast-Loop ===
 
 def run_forecasts():
-    start_date = datetime(2023, 1, 1)
-    end_date = datetime(2023, 1, 2)
+    start_date = datetime(2023, 1, 3)
+    end_date = datetime(2023, 2, 3)
     lead_time = 168
     time_str = "1200"
     model = "graphcast"
