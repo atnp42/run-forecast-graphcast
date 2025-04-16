@@ -18,6 +18,11 @@ LOCAL_RESULTS_PATH = "/workspace/results"
 os.makedirs(LOCAL_RESULTS_PATH, exist_ok=True)
 os.makedirs(LOCAL_ASSETS_PATH, exist_ok=True)
 
+# === Upload Tracking ===
+uploaded = set()
+pending_uploads = []
+uploads_done = threading.Event()
+
 # === Hilfsfunktionen ===
 
 def download_folder(dbx, dropbox_path, local_path):
@@ -41,7 +46,6 @@ def is_file_stable(path, min_size_bytes=4_500_000_000, idle_seconds=30):
         file_size = stat.st_size
         mtime = stat.st_mtime
         time_since_mod = time.time() - mtime
-
         return file_size >= min_size_bytes and time_since_mod >= idle_seconds
     except FileNotFoundError:
         return False
@@ -89,10 +93,9 @@ def upload_result_to_dropbox(local_file):
     print(f"[UPLOAD] File upload complete and local file deleted: {file_name}\n")
 
 def upload_worker():
-    uploaded = set()
     print("[UPLOAD] Background uploader started.")
-    while True:
-        for fname in os.listdir(LOCAL_RESULTS_PATH):
+    while not uploads_done.is_set() or pending_uploads:
+        for fname in list(pending_uploads):
             local_path = os.path.join(LOCAL_RESULTS_PATH, fname)
 
             if fname in uploaded or not os.path.isfile(local_path):
@@ -102,9 +105,12 @@ def upload_worker():
                 try:
                     upload_result_to_dropbox(local_path)
                     uploaded.add(fname)
+                    pending_uploads.remove(fname)
                 except Exception as e:
                     print(f"[UPLOAD] Error uploading {fname}: {e}")
-        time.sleep(10)
+        time.sleep(5)
+
+    print("[UPLOAD] All uploads completed. Uploader thread exiting.")
 
 # === Forecast-Loop ===
 
@@ -135,6 +141,8 @@ def run_forecasts():
         subprocess.run(command)
         print(f"[FORECAST] Finished forecast for {date_str}\n")
 
+        # Queue for upload
+        pending_uploads.append(output_filename)
         start_date += timedelta(days=1)
 
 # === Main ===
@@ -149,5 +157,7 @@ if __name__ == "__main__":
 
     run_forecasts()
 
-    print("[DONE] Forecasts finished. Waiting 60 seconds for uploads to complete...")
-    time.sleep(60)
+    print("[DONE] Forecasts finished. Waiting for uploads to complete...")
+    uploads_done.set()
+    uploader_thread.join()
+    print("[DONE] All uploads are done.")
