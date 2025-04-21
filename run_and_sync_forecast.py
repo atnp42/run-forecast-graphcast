@@ -1,6 +1,5 @@
 import os
 import time
-import shutil
 import threading
 import subprocess
 from datetime import datetime, timedelta
@@ -8,7 +7,6 @@ from datetime import datetime, timedelta
 import xarray as xr
 import pygrib
 import dropbox
-import warnings
 
 # === Config ===
 ACCESS_TOKEN = os.getenv("DROPBOX_TOKEN")
@@ -32,8 +30,8 @@ lon_min, lon_max = -130.0, -60
 uploaded = set()
 pending_uploads = []
 uploads_done = threading.Event()
-
-warnings.filterwarnings("ignore", category=FutureWarning)
+last_uploaded_file = None
+upload_lock = threading.Lock()
 
 # === Dropbox ===
 def download_folder(dbx, dropbox_path, local_path):
@@ -60,6 +58,8 @@ def is_file_stable(path, min_size_bytes=50_000_000, idle_seconds=30):
         return False
 
 def upload_result_to_dropbox(local_file):
+    global last_uploaded_file
+
     file_name = os.path.basename(local_file)
     dropbox_target_path = f"{DROPBOX_RESULTS_PATH}/{file_name}"
     file_size = os.path.getsize(local_file)
@@ -84,8 +84,10 @@ def upload_result_to_dropbox(local_file):
                 else:
                     dbx.files_upload_session_finish(chunk, cursor, commit)
 
-    os.remove(local_file)
-    print(f"[UPLOAD] Done and deleted: {file_name}\n")
+    with upload_lock:
+        last_uploaded_file = file_name
+
+    print(f"[UPLOAD] Done: {file_name}\n")
 
 def upload_worker():
     print("[UPLOAD] Background uploader started.")
@@ -106,7 +108,22 @@ def upload_worker():
         time.sleep(5)
     print("[UPLOAD] All uploads completed. Uploader thread exiting.")
 
-# === Spatial Subsetting ===
+# === Cleanup ===
+def cleanup_previous_step():
+    for f in os.listdir(TEMP_NC_DIR):
+        try:
+            os.remove(os.path.join(TEMP_NC_DIR, f))
+        except Exception as e:
+            print(f"[CLEANUP] Temp remove error: {f} -> {e}")
+
+    for f in os.listdir(LOCAL_RESULTS_PATH):
+        if f.endswith(".grib") or f.endswith(".nc"):
+            try:
+                os.remove(os.path.join(LOCAL_RESULTS_PATH, f))
+            except Exception as e:
+                print(f"[CLEANUP] Remove error: {f} -> {e}")
+
+# === Subsetting ===
 def subset_grib_to_conus(grib_path, output_path):
     try:
         with pygrib.open(grib_path) as grbs:
@@ -137,18 +154,24 @@ def subset_grib_to_conus(grib_path, output_path):
             datasets = [xr.open_dataset(f, decode_times=True) for f in saved_files]
             merged = xr.merge(datasets, compat="override")
             merged.to_netcdf(output_path)
-            for f in saved_files:
-                os.remove(f)
             print(f"[SUBSET] Subset saved: {output_path}")
         else:
             print(f"[SUBSET] No valid variables found in {grib_path}")
-
-        os.remove(grib_path)
     except Exception as e:
         print(f"[SUBSET] Failed to process {grib_path}: {e}")
 
-# === Forecast and Process ===
+# === Forecast ===
+def wait_for_last_upload():
+    while True:
+        with upload_lock:
+            if last_uploaded_file is not None:
+                break
+        time.sleep(2)
+
 def run_forecast_and_subset(date_str, time_str="1200", lead_time=168, model="graphcast"):
+    wait_for_last_upload()
+    cleanup_previous_step()
+
     raw_grib = os.path.join(LOCAL_RESULTS_PATH, f"{model}_{date_str}_{time_str}_{lead_time}h_gpu.grib")
     subset_nc = os.path.join(LOCAL_RESULTS_PATH, f"{model}_conus_{date_str}.nc")
 
@@ -170,7 +193,7 @@ def run_forecast_and_subset(date_str, time_str="1200", lead_time=168, model="gra
     subset_grib_to_conus(raw_grib, subset_nc)
     pending_uploads.append(os.path.basename(subset_nc))
 
-# === Main Loop ===
+# === Main ===
 if __name__ == "__main__":
     print("[INIT] Downloading assets...")
     download_folder(dbx, DROPBOX_ASSETS_PATH, LOCAL_ASSETS_PATH)
@@ -181,17 +204,19 @@ if __name__ == "__main__":
 
     start_date = datetime(2023, 1, 3)
     end_date = datetime(2023, 2, 3)
+    first_run = True
 
-    forecast_threads = []
     while start_date <= end_date:
         date_str = start_date.strftime("%Y%m%d")
-        t = threading.Thread(target=run_forecast_and_subset, args=(date_str,))
-        t.start()
-        forecast_threads.append(t)
-        start_date += timedelta(days=1)
 
-    for t in forecast_threads:
-        t.join()
+        if not first_run:
+            wait_for_last_upload()
+            cleanup_previous_step()
+        else:
+            first_run = False
+
+        run_forecast_and_subset(date_str)
+        start_date += timedelta(days=1)
 
     print("[MAIN] Forecasts done. Waiting for uploads...")
     uploads_done.set()
