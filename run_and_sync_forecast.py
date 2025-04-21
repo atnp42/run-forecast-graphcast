@@ -169,9 +169,6 @@ def wait_for_last_upload():
         time.sleep(2)
 
 def run_forecast_and_subset(date_str, time_str="1200", lead_time=168, model="graphcast"):
-    wait_for_last_upload()
-    cleanup_previous_step()
-
     raw_grib = os.path.join(LOCAL_RESULTS_PATH, f"{model}_{date_str}_{time_str}_{lead_time}h_gpu.grib")
     subset_nc = os.path.join(LOCAL_RESULTS_PATH, f"{model}_conus_{date_str}.nc")
 
