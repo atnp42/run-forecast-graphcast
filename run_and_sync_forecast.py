@@ -125,50 +125,66 @@ def cleanup_previous_step():
 
 # === Subsetting ===
 def subset_grib_to_conus(grib_path, output_path):
+    print(f"[SUBSET] Starting subsetting: {grib_path}")
+    temp_files = []
+
     try:
         with pygrib.open(grib_path) as grbs:
             unique_vars = sorted(set((grb.shortName, grb.typeOfLevel) for grb in grbs))
+        print(f"[SUBSET] Found {len(unique_vars)} variable combinations.")
 
-        saved_files = []
         for shortName, typeOfLevel in unique_vars:
             try:
+                print(f"[SUBSET] Processing: {shortName} ({typeOfLevel})")
                 ds = xr.open_dataset(
                     grib_path,
                     engine="cfgrib",
                     filter_by_keys={'shortName': shortName, 'typeOfLevel': typeOfLevel},
                     backend_kwargs={'indexpath': ''},
                 )
+
                 if ds.longitude.max() > 180:
                     ds = ds.assign_coords(longitude=(((ds.longitude + 180) % 360) - 180))
                     ds = ds.sortby('longitude')
+
                 ds_subset = ds.sel(latitude=slice(lat_max, lat_min), longitude=slice(lon_min, lon_max))
                 ds_subset.load()
 
                 temp_file = os.path.join(TEMP_NC_DIR, f"{shortName}_{typeOfLevel}.nc")
                 ds_subset.to_netcdf(temp_file)
-                saved_files.append(temp_file)
+                temp_files.append(temp_file)
+                print(f"[SUBSET] Finished: {shortName} ({typeOfLevel})")
+
             except Exception as e:
                 print(f"[SUBSET] Skipping {shortName} ({typeOfLevel}): {e}")
 
-        if saved_files:
-            datasets = [xr.open_dataset(f, decode_times=True) for f in saved_files]
+        if temp_files:
+            print(f"[SUBSET] Merging {len(temp_files)} files...")
+            datasets = [xr.open_dataset(f, decode_times=True) for f in temp_files]
             merged = xr.merge(datasets, compat="override")
             merged.to_netcdf(output_path)
-            print(f"[SUBSET] Subset saved: {output_path}")
+            print(f"[SUBSET] Subset written: {output_path}")
         else:
-            print(f"[SUBSET] No valid variables found in {grib_path}")
-    except Exception as e:
-        print(f"[SUBSET] Failed to process {grib_path}: {e}")
+            print(f"[SUBSET] No valid NetCDFs created.")
 
-# === Forecast ===
-def wait_for_last_upload():
-    while True:
-        with upload_lock:
-            if last_uploaded_file is not None:
-                break
-        time.sleep(2)
+    except Exception as e:
+        print(f"[SUBSET] GRIB reading failed: {e}")
+
+    finally:
+        for f in temp_files:
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+        shutil.rmtree(TEMP_NC_DIR, ignore_errors=True)
+        try:
+            os.remove(grib_path)
+        except Exception:
+            pass
 
 def run_forecast_and_subset(date_str, time_str="1200", lead_time=168, model="graphcast"):
+    global last_uploaded_file
+
     raw_grib = os.path.join(LOCAL_RESULTS_PATH, f"{model}_{date_str}_{time_str}_{lead_time}h_gpu.grib")
     subset_nc = os.path.join(LOCAL_RESULTS_PATH, f"{model}_conus_{date_str}.nc")
 
@@ -189,6 +205,9 @@ def run_forecast_and_subset(date_str, time_str="1200", lead_time=168, model="gra
 
     subset_grib_to_conus(raw_grib, subset_nc)
     pending_uploads.append(os.path.basename(subset_nc))
+
+    # Forecast done, wait for upload before next cleanup
+    last_uploaded_file = None
 
 # === Main ===
 if __name__ == "__main__":
