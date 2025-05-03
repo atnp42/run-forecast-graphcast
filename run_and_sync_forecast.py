@@ -22,6 +22,22 @@ LOCAL_RESULTS_PATH = "/workspace/results"
 os.makedirs(LOCAL_RESULTS_PATH, exist_ok=True)
 os.makedirs(LOCAL_ASSETS_PATH, exist_ok=True)
 
+# === Download function ===
+def download_folder(dbx, dropbox_path, local_path):
+    entries = dbx.files_list_folder(dropbox_path).entries
+    for entry in entries:
+        dp = f"{dropbox_path}/{entry.name}"
+        lp = f"{local_path}/{entry.name}"
+
+        if isinstance(entry, dropbox.files.FileMetadata):
+            print(f"[ASSETS] Downloading asset: {dp}")
+            with open(lp, "wb") as f:
+                _, res = dbx.files_download(dp)
+                f.write(res.content)
+        elif isinstance(entry, dropbox.files.FolderMetadata):
+            os.makedirs(lp, exist_ok=True)
+            download_folder(dbx, dp, lp)
+
 # === CONUS Cropping Config ===
 lat_min, lat_max = 15, 50
 lon_min, lon_max = -130, -66
@@ -35,7 +51,6 @@ known_levels = {
 
 # === Queues and Flags ===
 processing_queue = []
-uploads_done = threading.Event()
 forecasting_done = threading.Event()
 
 # === Utility Functions ===
@@ -44,16 +59,14 @@ def clean_workspace():
     print("[CLEANUP] Cleaning local results folder...")
     for item in os.listdir(LOCAL_RESULTS_PATH):
         item_path = os.path.join(LOCAL_RESULTS_PATH, item)
-        if os.path.isfile(item_path) or os.path.isdir(item_path):
-            try:
-                if os.path.isfile(item_path):
-                    os.remove(item_path)
-                else:
-                    shutil.rmtree(item_path)
-                print(f"[CLEANUP] Removed: {item_path}")
-            except Exception as e:
-                print(f"[CLEANUP] Failed to remove {item_path}: {e}")
-
+        try:
+            if os.path.isfile(item_path):
+                os.remove(item_path)
+            else:
+                shutil.rmtree(item_path)
+            print(f"[CLEANUP] Removed: {item_path}")
+        except Exception as e:
+            print(f"[CLEANUP] Failed to remove {item_path}: {e}")
 
 def crop_and_prepare(local_grib_path):
     print(f"[PROCESS] Starting subsetting for {local_grib_path}...")
@@ -69,10 +82,7 @@ def crop_and_prepare(local_grib_path):
                 ds = xr.open_dataset(
                     local_grib_path,
                     engine="cfgrib",
-                    backend_kwargs={
-                        "filter_by_keys": filter_keys,
-                        "indexpath": ""
-                    },
+                    backend_kwargs={"filter_by_keys": filter_keys, "indexpath": ""},
                     decode_times=True
                 )
 
@@ -139,7 +149,6 @@ def crop_and_prepare(local_grib_path):
     print(f"[PROCESS] Zipped: {zip_path}")
     return zip_path
 
-
 def upload_to_dropbox(zip_path):
     file_name = os.path.basename(zip_path)
     dropbox_target = f"{DROPBOX_RESULTS_PATH}/{file_name}"
@@ -150,7 +159,6 @@ def upload_to_dropbox(zip_path):
 
     print(f"[UPLOAD] Upload complete: {file_name}")
     clean_workspace()
-
 
 def processing_worker():
     print("[PROCESS] Processor started.")
@@ -165,9 +173,6 @@ def processing_worker():
         else:
             time.sleep(5)
     print("[PROCESS] Processor exiting.")
-
-
-# === Forecast Loop ===
 
 def run_forecasts():
     start_date = datetime(2023, 1, 3)
@@ -202,21 +207,9 @@ def run_forecasts():
 
     forecasting_done.set()
 
-
-# === Main ===
 if __name__ == "__main__":
     print("[INIT] Downloading assets from Dropbox...")
-    entries = dbx.files_list_folder(DROPBOX_ASSETS_PATH).entries
-    for entry in entries:
-        dp = f"{DROPBOX_ASSETS_PATH}/{entry.name}"
-        lp = f"{LOCAL_ASSETS_PATH}/{entry.name}"
-
-        if isinstance(entry, dropbox.files.FileMetadata):
-            print(f"[ASSETS] Downloading: {dp}")
-            with open(lp, "wb") as f:
-                _, res = dbx.files_download(dp)
-                f.write(res.content)
-
+    download_folder(dbx, DROPBOX_ASSETS_PATH, LOCAL_ASSETS_PATH)
     print("[INIT] Assets downloaded.\n")
 
     processor_thread = threading.Thread(target=processing_worker, daemon=True)
