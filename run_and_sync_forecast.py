@@ -49,12 +49,6 @@ known_levels = {
     "isobaricInhPa": [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
 }
 
-# === Queues and Flags ===
-processing_queue = []
-forecasting_done = threading.Event()
-
-# === Utility Functions ===
-
 def clean_workspace():
     print("[CLEANUP] Cleaning local results folder...")
     for item in os.listdir(LOCAL_RESULTS_PATH):
@@ -68,7 +62,7 @@ def clean_workspace():
         except Exception as e:
             print(f"[CLEANUP] Failed to remove {item_path}: {e}")
 
-def crop_and_prepare(local_grib_path):
+def crop_and_prepare_and_upload(local_grib_path):
     print(f"[PROCESS] Starting subsetting for {local_grib_path}...")
     base_name = os.path.splitext(os.path.basename(local_grib_path))[0]
     output_dir = os.path.join(LOCAL_RESULTS_PATH, base_name)
@@ -147,9 +141,7 @@ def crop_and_prepare(local_grib_path):
     print(f"[PROCESS] Zipping folder: {zip_path}")
     shutil.make_archive(output_dir, 'zip', output_dir)
     print(f"[PROCESS] Zipped: {zip_path}")
-    return zip_path
 
-def upload_to_dropbox(zip_path):
     file_name = os.path.basename(zip_path)
     dropbox_target = f"{DROPBOX_RESULTS_PATH}/{file_name}"
     print(f"[UPLOAD] Uploading {file_name} to {dropbox_target}")
@@ -160,26 +152,14 @@ def upload_to_dropbox(zip_path):
     print(f"[UPLOAD] Upload complete: {file_name}")
     clean_workspace()
 
-def processing_worker():
-    print("[PROCESS] Processor started.")
-    while not (forecasting_done.is_set() and not processing_queue):
-        if processing_queue:
-            grib_file = processing_queue.pop(0)
-            try:
-                zip_file = crop_and_prepare(grib_file)
-                upload_to_dropbox(zip_file)
-            except Exception as e:
-                print(f"[PROCESS] Error processing {grib_file}: {e}")
-        else:
-            time.sleep(5)
-    print("[PROCESS] Processor exiting.")
-
 def run_forecasts():
     start_date = datetime(2023, 1, 3)
     end_date = datetime(2023, 2, 3)
     lead_time = 168
     time_str = "1200"
     model = "graphcast"
+
+    previous_grib = None
 
     while start_date <= end_date:
         date_str = start_date.strftime("%Y%m%d")
@@ -201,22 +181,23 @@ def run_forecasts():
         subprocess.run(command)
         print(f"[FORECAST] Forecast complete: {output_filename}")
 
-        processing_queue.append(output_path)
+        if previous_grib:
+            processing_thread = threading.Thread(
+                target=crop_and_prepare_and_upload, args=(previous_grib,)
+            )
+            processing_thread.start()
 
+        previous_grib = output_path
         start_date += timedelta(days=1)
 
-    forecasting_done.set()
+    if previous_grib:
+        crop_and_prepare_and_upload(previous_grib)
 
 if __name__ == "__main__":
     print("[INIT] Downloading assets from Dropbox...")
     download_folder(dbx, DROPBOX_ASSETS_PATH, LOCAL_ASSETS_PATH)
     print("[INIT] Assets downloaded.\n")
 
-    processor_thread = threading.Thread(target=processing_worker, daemon=True)
-    processor_thread.start()
-
     run_forecasts()
 
-    print("[DONE] Forecasting done. Waiting for processing/uploading to finish...")
-    processor_thread.join()
-    print("[DONE] All processing and uploads completed.")
+    print("[DONE] All forecasts processed and uploaded.")
