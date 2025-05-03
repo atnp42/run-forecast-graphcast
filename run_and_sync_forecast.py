@@ -49,18 +49,26 @@ known_levels = {
     "isobaricInhPa": [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
 }
 
-def clean_workspace():
-    print("[CLEANUP] Cleaning local results folder...")
-    for item in os.listdir(LOCAL_RESULTS_PATH):
-        item_path = os.path.join(LOCAL_RESULTS_PATH, item)
-        try:
-            if os.path.isfile(item_path):
-                os.remove(item_path)
-            else:
-                shutil.rmtree(item_path)
-            print(f"[CLEANUP] Removed: {item_path}")
-        except Exception as e:
-            print(f"[CLEANUP] Failed to remove {item_path}: {e}")
+def targeted_cleanup(base_name):
+    print(f"[CLEANUP] Cleaning files for: {base_name}")
+    targets = [
+        f"{base_name}.grib",
+        f"{base_name}.zip",
+        base_name
+    ]
+    for target in targets:
+        full_path = os.path.join(LOCAL_RESULTS_PATH, target)
+        if os.path.exists(full_path):
+            try:
+                if os.path.isfile(full_path):
+                    os.remove(full_path)
+                else:
+                    shutil.rmtree(full_path)
+                print(f"[CLEANUP] Removed: {full_path}")
+            except Exception as e:
+                print(f"[CLEANUP] Failed to remove {full_path}: {e}")
+        else:
+            print(f"[CLEANUP] Skipped (not found): {full_path}")
 
 def crop_and_prepare_and_upload(local_grib_path):
     print(f"[PROCESS] Starting subsetting for {local_grib_path}...")
@@ -150,7 +158,7 @@ def crop_and_prepare_and_upload(local_grib_path):
         dbx.files_upload(f.read(), dropbox_target, mode=dropbox.files.WriteMode("overwrite"))
 
     print(f"[UPLOAD] Upload complete: {file_name}")
-    clean_workspace()
+    targeted_cleanup(base_name)
 
 def run_forecasts():
     start_date = datetime(2023, 1, 3)
