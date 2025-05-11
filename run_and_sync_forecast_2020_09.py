@@ -8,8 +8,8 @@ import zipfile
 from datetime import datetime, timedelta
 import xarray as xr
 from eccodes import codes_grib_new_from_file, codes_get, codes_release
+from collections import defaultdict
 
-# === Dropbox Setup ===
 ACCESS_TOKEN = os.getenv("DROPBOX_TOKEN")
 dbx = dropbox.Dropbox(ACCESS_TOKEN)
 
@@ -22,13 +22,11 @@ LOCAL_RESULTS_PATH = "/workspace/results"
 os.makedirs(LOCAL_RESULTS_PATH, exist_ok=True)
 os.makedirs(LOCAL_ASSETS_PATH, exist_ok=True)
 
-# === Download function ===
 def download_folder(dbx, dropbox_path, local_path):
     entries = dbx.files_list_folder(dropbox_path).entries
     for entry in entries:
         dp = f"{dropbox_path}/{entry.name}"
         lp = f"{local_path}/{entry.name}"
-
         if isinstance(entry, dropbox.files.FileMetadata):
             print(f"[ASSETS] Downloading asset: {dp}")
             with open(lp, "wb") as f:
@@ -38,16 +36,8 @@ def download_folder(dbx, dropbox_path, local_path):
             os.makedirs(lp, exist_ok=True)
             download_folder(dbx, dp, lp)
 
-# === CONUS Cropping Config ===
 lat_min, lat_max = 15, 50
 lon_min, lon_max = -130, -66
-
-known_levels = {
-    "surface": [0],
-    "heightAboveGround": [2, 10],
-    "meanSea": [0],
-    "isobaricInhPa": [50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 850, 925, 1000]
-}
 
 def targeted_cleanup(base_name):
     print(f"[CLEANUP] Cleaning files for: {base_name}")
@@ -70,21 +60,47 @@ def targeted_cleanup(base_name):
         else:
             print(f"[CLEANUP] Skipped (not found): {full_path}")
 
+def get_all_field_levels(grib_path):
+    field_levels = defaultdict(set)
+    with open(grib_path, "rb") as f:
+        while True:
+            gid = codes_grib_new_from_file(f)
+            if gid is None:
+                break
+            try:
+                short_name = codes_get(gid, "shortName")
+                level_type = codes_get(gid, "typeOfLevel")
+                level = int(codes_get(gid, "level"))
+                field_levels[(short_name, level_type)].add(level)
+            except:
+                pass
+            finally:
+                codes_release(gid)
+    return field_levels
+
 def crop_and_prepare_and_upload(local_grib_path):
     print(f"[PROCESS] Starting subsetting for {local_grib_path}...")
     base_name = os.path.splitext(os.path.basename(local_grib_path))[0]
     output_dir = os.path.join(LOCAL_RESULTS_PATH, base_name)
     os.makedirs(output_dir, exist_ok=True)
 
-    for type_, levels in known_levels.items():
-        for level in levels:
-            print(f"[PROCESS] Loading typeOfLevel='{type_}', level={level}")
+    field_levels = get_all_field_levels(local_grib_path)
+
+    for (short_name, level_type), levels in sorted(field_levels.items()):
+        for level in sorted(levels):
             try:
-                filter_keys = {"typeOfLevel": type_, "level": int(level)}
+                print(f"[PROCESS] Loading {short_name} @ {level_type}={level}")
                 ds = xr.open_dataset(
                     local_grib_path,
                     engine="cfgrib",
-                    backend_kwargs={"filter_by_keys": filter_keys, "indexpath": ""},
+                    backend_kwargs={
+                        "filter_by_keys": {
+                            "shortName": short_name,
+                            "typeOfLevel": level_type,
+                            "level": level
+                        },
+                        "indexpath": ""
+                    },
                     decode_times=True
                 )
 
@@ -93,57 +109,13 @@ def crop_and_prepare_and_upload(local_grib_path):
                     ds = ds.sortby("longitude")
 
                 ds_sub = ds.sel(latitude=slice(lat_max, lat_min), longitude=slice(lon_min, lon_max))
-                out_name = f"{type_}_lvl{int(level)}.nc"
+                out_name = f"{short_name}_{level_type}_lvl{level}.nc"
                 out_path = os.path.join(output_dir, out_name)
                 ds_sub.to_netcdf(out_path)
-                print(f"[PROCESS] Saved subset: {out_path}")
+                print(f"[SAVED] {out_path}")
 
             except Exception as e:
-                print(f"[ERROR] Failed to process typeOfLevel='{type_}' level={level}: {e}")
-
-    print("[PROCESS] Processing Total Precipitation (tp)...")
-    forecast_times = set()
-    with open(local_grib_path, 'rb') as f:
-        while True:
-            gid = codes_grib_new_from_file(f)
-            if gid is None:
-                break
-            try:
-                short_name = codes_get(gid, "shortName")
-                if short_name == "tp":
-                    forecast_times.add(codes_get(gid, "dataTime"))
-            finally:
-                codes_release(gid)
-
-    for forecast_time in sorted(forecast_times):
-        try:
-            ds_tp = xr.open_dataset(
-                local_grib_path,
-                engine="cfgrib",
-                backend_kwargs={
-                    "filter_by_keys": {
-                        "shortName": "tp",
-                        "typeOfLevel": "surface",
-                        "level": 0,
-                        "dataTime": forecast_time
-                    },
-                    "indexpath": ""
-                },
-                decode_times=True
-            )
-
-            if ds_tp.longitude.max() > 180:
-                ds_tp = ds_tp.assign_coords(longitude=(ds_tp.longitude + 180) % 360 - 180)
-                ds_tp = ds_tp.sortby("longitude")
-
-            ds_tp_sub = ds_tp.sel(latitude=slice(lat_max, lat_min), longitude=slice(lon_min, lon_max))
-            out_name = f"tp_dataTime{forecast_time:04d}.nc"
-            out_path = os.path.join(output_dir, out_name)
-            ds_tp_sub.to_netcdf(out_path)
-            print(f"[PROCESS] Saved TP subset: {out_path}")
-
-        except Exception as e:
-            print(f"[ERROR] Failed TP for dataTime={forecast_time:04d}: {e}")
+                print(f"[SKIPPED] {short_name} @ {level_type}={level}: {e}")
 
     zip_path = f"{output_dir}.zip"
     print(f"[PROCESS] Zipping folder: {zip_path}")
