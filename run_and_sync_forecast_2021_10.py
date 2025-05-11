@@ -133,8 +133,8 @@ def crop_and_prepare_and_upload(local_grib_path):
     targeted_cleanup(base_name)
 
 def run_forecasts():
-    start_date = datetime(2021, 10, 21)
-    end_date = datetime(2021, 10, 22)
+    start_date = datetime(2021, 10, 23)
+    end_date = datetime(2021, 10, 25)
     lead_time = 168
     time_str = "1200"
     model = "graphcast"
