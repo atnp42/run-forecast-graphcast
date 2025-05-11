@@ -133,7 +133,7 @@ def crop_and_prepare_and_upload(local_grib_path):
     targeted_cleanup(base_name)
 
 def run_forecasts():
-    start_date = datetime(2020, 9, 12)
+    start_date = datetime(2020, 9, 13)
     end_date = datetime(2020, 9, 14)
     lead_time = 168
     time_str = "1200"
