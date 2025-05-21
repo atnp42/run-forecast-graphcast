@@ -133,19 +133,20 @@ def crop_and_prepare_and_upload(local_grib_path):
     targeted_cleanup(base_name)
 
 def run_forecasts():
-    start_date = datetime(2019, 10, 1)
+    start_date = datetime(2019, 10, 27)
     end_date = datetime(2019, 12, 31)
     lead_time = 168
     time_str = "1200"
     model = "graphcast"
 
-    previous_grib = None
+    forecast_queue = []  # FIFO: (date_str, grib_path)
 
     while start_date <= end_date:
         date_str = start_date.strftime("%Y%m%d")
         output_filename = f"graphcast_{date_str}_{time_str}_{lead_time}h_gpu.grib"
         output_path = os.path.join(LOCAL_RESULTS_PATH, output_filename)
 
+        print(f"[FORECAST] Running forecast for {date_str}")
         command = [
             "ai-models",
             "--assets", LOCAL_ASSETS_PATH,
@@ -156,22 +157,42 @@ def run_forecasts():
             "--lead-time", str(lead_time),
             model
         ]
-
-        print(f"[FORECAST] Running forecast for {date_str}")
         subprocess.run(command)
         print(f"[FORECAST] Forecast complete: {output_filename}")
 
-        if previous_grib:
-            processing_thread = threading.Thread(
-                target=crop_and_prepare_and_upload, args=(previous_grib,)
-            )
-            processing_thread.start()
+        forecast_queue.append((date_str, output_path))
 
-        previous_grib = output_path
+        if len(forecast_queue) >= 3:
+            _, grib_to_process = forecast_queue[-3]
+
+            def processing_task(path):
+                print(f"[PROCESS] Safe to process (T-2): {path}")
+                crop_and_prepare_and_upload(path)
+                try:
+                    os.remove(path)
+                    print(f"[CLEANUP] Deleted GRIB after processing: {path}")
+                except Exception as e:
+                    print(f"[CLEANUP] GRIB delete error: {e}")
+
+            threading.Thread(target=processing_task, args=(grib_to_process,)).start()
+
+        if len(forecast_queue) > 4:
+            old_date, old_path = forecast_queue.pop(0)
+            base_name = os.path.splitext(os.path.basename(old_path))[0]
+            targeted_cleanup(base_name)
+
         start_date += timedelta(days=1)
 
-    if previous_grib:
-        crop_and_prepare_and_upload(previous_grib)
+    print("[FINAL] Processing remaining files...")
+    for i in range(len(forecast_queue) - 2):
+        _, path = forecast_queue[i]
+        crop_and_prepare_and_upload(path)
+        try:
+            os.remove(path)
+            print(f"[CLEANUP] Final GRIB deleted: {path}")
+        except Exception as e:
+            print(f"[CLEANUP] Final delete error: {e}")
+        targeted_cleanup(os.path.splitext(os.path.basename(path))[0])
 
 if __name__ == "__main__":
     print("[INIT] Downloading assets from Dropbox...")
