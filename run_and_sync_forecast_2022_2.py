@@ -2,7 +2,6 @@ import os
 import time
 import dropbox
 import subprocess
-import threading
 import shutil
 import zipfile
 from datetime import datetime, timedelta
@@ -130,22 +129,23 @@ def crop_and_prepare_and_upload(local_grib_path):
         dbx.files_upload(f.read(), dropbox_target, mode=dropbox.files.WriteMode("overwrite"))
 
     print(f"[UPLOAD] Upload complete: {file_name}")
-    targeted_cleanup(base_name)
 
 def run_forecasts():
-    start_date = datetime(2022, 7, 1)
+    start_date = datetime(2022, 7, 6)
     end_date = datetime(2022, 12, 31)
     lead_time = 168
     time_str = "1200"
     model = "graphcast"
 
-    previous_grib = None
+    previous_grib_path = None
 
     while start_date <= end_date:
         date_str = start_date.strftime("%Y%m%d")
         output_filename = f"graphcast_{date_str}_{time_str}_{lead_time}h_gpu.grib"
         output_path = os.path.join(LOCAL_RESULTS_PATH, output_filename)
 
+        # Forecast
+        print(f"[FORECAST] Running forecast for {date_str}")
         command = [
             "ai-models",
             "--assets", LOCAL_ASSETS_PATH,
@@ -156,22 +156,23 @@ def run_forecasts():
             "--lead-time", str(lead_time),
             model
         ]
-
-        print(f"[FORECAST] Running forecast for {date_str}")
         subprocess.run(command)
         print(f"[FORECAST] Forecast complete: {output_filename}")
 
-        if previous_grib:
-            processing_thread = threading.Thread(
-                target=crop_and_prepare_and_upload, args=(previous_grib,)
-            )
-            processing_thread.start()
+        # If previous exists, clean it now
+        if previous_grib_path:
+            prev_base = os.path.splitext(os.path.basename(previous_grib_path))[0]
+            print(f"[CLEANUP] Cleaning previous forecast: {prev_base}")
+            targeted_cleanup(prev_base)
 
-        previous_grib = output_path
+        # Process and upload current
+        print(f"[PROCESS] Processing forecast for {date_str}")
+        crop_and_prepare_and_upload(output_path)
+        print(f"[PROCESS] Done processing {date_str}")
+
+        # Store current as previous for next loop
+        previous_grib_path = output_path
         start_date += timedelta(days=1)
-
-    if previous_grib:
-        crop_and_prepare_and_upload(previous_grib)
 
 if __name__ == "__main__":
     print("[INIT] Downloading assets from Dropbox...")
