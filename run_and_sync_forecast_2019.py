@@ -137,11 +137,15 @@ def run_forecasts():
     time_str = "1200"
     model = "graphcast"
 
-    forecast_queue = []  # (date_str, grib_path)
+    previous_grib_path = None
 
-    def run_forecast(date_str):
+    while start_date <= end_date:
+        date_str = start_date.strftime("%Y%m%d")
         output_filename = f"graphcast_{date_str}_{time_str}_{lead_time}h_gpu.grib"
         output_path = os.path.join(LOCAL_RESULTS_PATH, output_filename)
+
+        # Forecast
+        print(f"[FORECAST] Running forecast for {date_str}")
         command = [
             "ai-models",
             "--assets", LOCAL_ASSETS_PATH,
@@ -152,58 +156,23 @@ def run_forecasts():
             "--lead-time", str(lead_time),
             model
         ]
-        print(f"[FORECAST] Running forecast for {date_str}")
         subprocess.run(command)
         print(f"[FORECAST] Forecast complete: {output_filename}")
-        return output_path
 
-    def process_forecast(date_str, grib_path, previous_grib_path=None):
+        # If previous exists, clean it now
         if previous_grib_path:
             prev_base = os.path.splitext(os.path.basename(previous_grib_path))[0]
-            print(f"[CLEANUP] Cleaning files from previous forecast: {prev_base}")
+            print(f"[CLEANUP] Cleaning previous forecast: {prev_base}")
             targeted_cleanup(prev_base)
 
+        # Process and upload current
         print(f"[PROCESS] Processing forecast for {date_str}")
-        crop_and_prepare_and_upload(grib_path)
+        crop_and_prepare_and_upload(output_path)
         print(f"[PROCESS] Done processing {date_str}")
 
-    # Step 1: Run first forecast only
-    current_date = start_date.strftime("%Y%m%d")
-    current_grib = run_forecast(current_date)
-    forecast_queue.append((current_date, current_grib))
-    start_date += timedelta(days=1)
-
-    # Step 2: Run second forecast only
-    next_date = start_date.strftime("%Y%m%d")
-    next_grib = run_forecast(next_date)
-    forecast_queue.append((next_date, next_grib))
-    start_date += timedelta(days=1)
-
-    previous_grib_path = None
-
-    # Step 3: Main loop
-    while start_date <= end_date:
-        # Process oldest forecast (T) and delete T-1
-        process_date, process_grib = forecast_queue.pop(0)
-
-        # Start next forecast (T+2)
-        current_date = start_date.strftime("%Y%m%d")
-        current_grib = run_forecast(current_date)
-        forecast_queue.append((current_date, current_grib))
-
-        # Process forecast and clean up previous
-        process_forecast(process_date, process_grib, previous_grib_path)
-
-        # Track for next cleanup
-        previous_grib_path = process_grib
-
+        # Store current as previous for next loop
+        previous_grib_path = output_path
         start_date += timedelta(days=1)
-
-    # Final processing of remaining forecasts
-    while forecast_queue:
-        process_date, process_grib = forecast_queue.pop(0)
-        process_forecast(process_date, process_grib, previous_grib_path)
-        previous_grib_path = process_grib
 
 if __name__ == "__main__":
     print("[INIT] Downloading assets from Dropbox...")
