@@ -2,7 +2,6 @@ import os
 import time
 import dropbox
 import subprocess
-import threading
 import shutil
 import zipfile
 from datetime import datetime, timedelta
@@ -130,7 +129,6 @@ def crop_and_prepare_and_upload(local_grib_path):
         dbx.files_upload(f.read(), dropbox_target, mode=dropbox.files.WriteMode("overwrite"))
 
     print(f"[UPLOAD] Upload complete: {file_name}")
-    targeted_cleanup(base_name)
 
 def run_forecasts():
     start_date = datetime(2019, 10, 1)
@@ -140,7 +138,6 @@ def run_forecasts():
     model = "graphcast"
 
     forecast_queue = []  # (date_str, grib_path)
-    previous_processed = None
 
     def run_forecast(date_str):
         output_filename = f"graphcast_{date_str}_{time_str}_{lead_time}h_gpu.grib"
@@ -160,47 +157,53 @@ def run_forecasts():
         print(f"[FORECAST] Forecast complete: {output_filename}")
         return output_path
 
-    def process_forecast(date_str, grib_path):
+    def process_forecast(date_str, grib_path, previous_grib_path=None):
+        if previous_grib_path:
+            prev_base = os.path.splitext(os.path.basename(previous_grib_path))[0]
+            print(f"[CLEANUP] Cleaning files from previous forecast: {prev_base}")
+            targeted_cleanup(prev_base)
+
         print(f"[PROCESS] Processing forecast for {date_str}")
         crop_and_prepare_and_upload(grib_path)
         print(f"[PROCESS] Done processing {date_str}")
 
+    # Step 1: Run first forecast only
     current_date = start_date.strftime("%Y%m%d")
     current_grib = run_forecast(current_date)
     forecast_queue.append((current_date, current_grib))
     start_date += timedelta(days=1)
 
+    # Step 2: Run second forecast only
+    next_date = start_date.strftime("%Y%m%d")
+    next_grib = run_forecast(next_date)
+    forecast_queue.append((next_date, next_grib))
+    start_date += timedelta(days=1)
+
+    previous_grib_path = None
+
+    # Step 3: Main loop
     while start_date <= end_date:
-        # Forecast just completed: start processing and next forecast
-        next_date = start_date.strftime("%Y%m%d")
-        next_grib_path = None
+        # Process oldest forecast (T) and delete T-1
+        process_date, process_grib = forecast_queue.pop(0)
 
-        # Run next forecast while processing previous
-        if forecast_queue:
-            prev_date, prev_grib = forecast_queue[-1]
+        # Start next forecast (T+2)
+        current_date = start_date.strftime("%Y%m%d")
+        current_grib = run_forecast(current_date)
+        forecast_queue.append((current_date, current_grib))
 
-            # Start next forecast
-            next_grib_path = run_forecast(next_date)
-            forecast_queue.append((next_date, next_grib_path))
+        # Process forecast and clean up previous
+        process_forecast(process_date, process_grib, previous_grib_path)
 
-            # Process previous forecast
-            process_forecast(prev_date, prev_grib)
-
-            # After processing: cleanup the one BEFORE previous (fully processed and uploaded)
-            if previous_processed:
-                print(f"[CLEANUP] Cleaning up old forecast: {previous_processed}")
-                targeted_cleanup(previous_processed)
-
-            previous_processed = prev_date  # for next cleanup
+        # Track for next cleanup
+        previous_grib_path = process_grib
 
         start_date += timedelta(days=1)
 
-    # Final processing of remaining forecast
-    if forecast_queue:
-        last_date, last_grib = forecast_queue[-1]
-        process_forecast(last_date, last_grib)
-        if previous_processed:
-            targeted_cleanup(previous_processed)
+    # Final processing of remaining forecasts
+    while forecast_queue:
+        process_date, process_grib = forecast_queue.pop(0)
+        process_forecast(process_date, process_grib, previous_grib_path)
+        previous_grib_path = process_grib
 
 if __name__ == "__main__":
     print("[INIT] Downloading assets from Dropbox...")
