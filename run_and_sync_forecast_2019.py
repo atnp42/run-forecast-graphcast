@@ -133,20 +133,18 @@ def crop_and_prepare_and_upload(local_grib_path):
     targeted_cleanup(base_name)
 
 def run_forecasts():
-    start_date = datetime(2019, 10, 27)
+    start_date = datetime(2019, 10, 1)
     end_date = datetime(2019, 12, 31)
     lead_time = 168
     time_str = "1200"
     model = "graphcast"
 
-    forecast_queue = []  # FIFO: (date_str, grib_path)
+    forecast_queue = []  # (date_str, grib_path)
+    previous_processed = None
 
-    while start_date <= end_date:
-        date_str = start_date.strftime("%Y%m%d")
+    def run_forecast(date_str):
         output_filename = f"graphcast_{date_str}_{time_str}_{lead_time}h_gpu.grib"
         output_path = os.path.join(LOCAL_RESULTS_PATH, output_filename)
-
-        print(f"[FORECAST] Running forecast for {date_str}")
         command = [
             "ai-models",
             "--assets", LOCAL_ASSETS_PATH,
@@ -157,42 +155,52 @@ def run_forecasts():
             "--lead-time", str(lead_time),
             model
         ]
+        print(f"[FORECAST] Running forecast for {date_str}")
         subprocess.run(command)
         print(f"[FORECAST] Forecast complete: {output_filename}")
+        return output_path
 
-        forecast_queue.append((date_str, output_path))
+    def process_forecast(date_str, grib_path):
+        print(f"[PROCESS] Processing forecast for {date_str}")
+        crop_and_prepare_and_upload(grib_path)
+        print(f"[PROCESS] Done processing {date_str}")
 
-        if len(forecast_queue) >= 3:
-            _, grib_to_process = forecast_queue[-3]
+    current_date = start_date.strftime("%Y%m%d")
+    current_grib = run_forecast(current_date)
+    forecast_queue.append((current_date, current_grib))
+    start_date += timedelta(days=1)
 
-            def processing_task(path):
-                print(f"[PROCESS] Safe to process (T-2): {path}")
-                crop_and_prepare_and_upload(path)
-                try:
-                    os.remove(path)
-                    print(f"[CLEANUP] Deleted GRIB after processing: {path}")
-                except Exception as e:
-                    print(f"[CLEANUP] GRIB delete error: {e}")
+    while start_date <= end_date:
+        # Forecast just completed: start processing and next forecast
+        next_date = start_date.strftime("%Y%m%d")
+        next_grib_path = None
 
-            threading.Thread(target=processing_task, args=(grib_to_process,)).start()
+        # Run next forecast while processing previous
+        if forecast_queue:
+            prev_date, prev_grib = forecast_queue[-1]
 
-        if len(forecast_queue) > 4:
-            old_date, old_path = forecast_queue.pop(0)
-            base_name = os.path.splitext(os.path.basename(old_path))[0]
-            targeted_cleanup(base_name)
+            # Start next forecast
+            next_grib_path = run_forecast(next_date)
+            forecast_queue.append((next_date, next_grib_path))
+
+            # Process previous forecast
+            process_forecast(prev_date, prev_grib)
+
+            # After processing: cleanup the one BEFORE previous (fully processed and uploaded)
+            if previous_processed:
+                print(f"[CLEANUP] Cleaning up old forecast: {previous_processed}")
+                targeted_cleanup(previous_processed)
+
+            previous_processed = prev_date  # for next cleanup
 
         start_date += timedelta(days=1)
 
-    print("[FINAL] Processing remaining files...")
-    for i in range(len(forecast_queue) - 2):
-        _, path = forecast_queue[i]
-        crop_and_prepare_and_upload(path)
-        try:
-            os.remove(path)
-            print(f"[CLEANUP] Final GRIB deleted: {path}")
-        except Exception as e:
-            print(f"[CLEANUP] Final delete error: {e}")
-        targeted_cleanup(os.path.splitext(os.path.basename(path))[0])
+    # Final processing of remaining forecast
+    if forecast_queue:
+        last_date, last_grib = forecast_queue[-1]
+        process_forecast(last_date, last_grib)
+        if previous_processed:
+            targeted_cleanup(previous_processed)
 
 if __name__ == "__main__":
     print("[INIT] Downloading assets from Dropbox...")
