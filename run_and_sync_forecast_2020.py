@@ -131,7 +131,7 @@ def crop_and_prepare_and_upload(local_grib_path):
     print(f"[UPLOAD] Upload complete: {file_name}")
 
 def run_forecasts():
-    start_date = datetime(2020, 2, 4)
+    start_date = datetime(2020, 2, 15)
     end_date = datetime(2020, 6, 30)
     lead_time = 168
     time_str = "1200"
