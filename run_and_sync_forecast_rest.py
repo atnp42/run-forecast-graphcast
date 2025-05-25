@@ -4,7 +4,7 @@ import dropbox
 import subprocess
 import shutil
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime
 import xarray as xr
 from eccodes import codes_grib_new_from_file, codes_get, codes_release
 from collections import defaultdict
@@ -131,20 +131,22 @@ def crop_and_prepare_and_upload(local_grib_path):
     print(f"[UPLOAD] Upload complete: {file_name}")
 
 def run_forecasts():
-    start_date = datetime(2020, 12, 23)
-    end_date = datetime(2020, 12, 31)
+    date_list = [
+        "20200628", "20200629", "20200630",
+        "20211227", "20211228", "20211229", "20211230", "20211231",
+        "20231230", "20231231",
+        "20240629", "20240630"
+    ]
+
     lead_time = 168
     time_str = "1200"
     model = "graphcast"
-
     previous_grib_path = None
 
-    while start_date <= end_date:
-        date_str = start_date.strftime("%Y%m%d")
+    for date_str in date_list:
         output_filename = f"graphcast_{date_str}_{time_str}_{lead_time}h_gpu.grib"
         output_path = os.path.join(LOCAL_RESULTS_PATH, output_filename)
 
-        # Forecast
         print(f"[FORECAST] Running forecast for {date_str}")
         command = [
             "ai-models",
@@ -159,20 +161,16 @@ def run_forecasts():
         subprocess.run(command)
         print(f"[FORECAST] Forecast complete: {output_filename}")
 
-        # If previous exists, clean it now
         if previous_grib_path:
             prev_base = os.path.splitext(os.path.basename(previous_grib_path))[0]
             print(f"[CLEANUP] Cleaning previous forecast: {prev_base}")
             targeted_cleanup(prev_base)
 
-        # Process and upload current
         print(f"[PROCESS] Processing forecast for {date_str}")
         crop_and_prepare_and_upload(output_path)
         print(f"[PROCESS] Done processing {date_str}")
 
-        # Store current as previous for next loop
         previous_grib_path = output_path
-        start_date += timedelta(days=1)
 
 if __name__ == "__main__":
     print("[INIT] Downloading assets from Dropbox...")
