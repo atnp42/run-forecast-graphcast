@@ -132,7 +132,7 @@ def crop_and_prepare_and_upload(local_grib_path):
 
 def run_forecasts():
     date_list = [
-        "20220101", "20230701"
+        "20221222"
     ]
 
     lead_time = 168
